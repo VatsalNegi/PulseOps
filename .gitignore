@@ -1,0 +1,26 @@
+﻿# Dependencies
+node_modules/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Build output
+dist/
+coverage/
+build/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Local databases and runtime files
+*.sqlite
+*.sqlite3
+*.db
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+.vscode/
