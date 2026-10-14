@@ -26,7 +26,10 @@ async function resolveAllowedAddress(endpoint, allowLocalHttp) {
 
   const records = isIP(endpoint.hostname)
     ? [{ address: endpoint.hostname, family: isIP(endpoint.hostname) }]
-    : await lookup(endpoint.hostname, { all: true, verbatim: true });
+    : await lookup(endpoint.hostname, {
+        all: true,
+        verbatim: true
+      });
 
   if (
     !records.length ||
@@ -53,13 +56,20 @@ function performRequest(endpoint, address, timeoutMs) {
       {
         method: "GET",
         agent: false,
-        headers: { accept: "application/json, text/plain, */*" },
-        lookup: (_hostname, _options, callback) => {
-          callback(null, address.address, address.family);
+        headers: {
+          accept: "application/json, text/plain, */*"
+        },
+        lookup: (_hostname, options, callback) => {
+          if (options?.all) {
+            callback(null, [address]);
+          } else {
+            callback(null, address.address, address.family);
+          }
         }
       },
       (response) => {
         if (settled) return;
+
         settled = true;
         clearTimeout(timeout);
 
@@ -87,6 +97,7 @@ function performRequest(endpoint, address, timeoutMs) {
 
     request.on("error", (error) => {
       if (settled) return;
+
       settled = true;
       clearTimeout(timeout);
 
@@ -96,8 +107,8 @@ function performRequest(endpoint, address, timeoutMs) {
         latencyMs: null,
         httpStatusCode: null,
         errorName: error.name || "Error",
-        errorCode: error.code || null,
-        errorMessage: error.message || null
+        errorCode: error.code || error.cause?.code || null,
+        errorMessage: error.message || error.cause?.message || null
       });
     });
 
@@ -150,30 +161,24 @@ export async function probeHttpEndpoint({
     );
 
     const result = await performRequest(endpoint, address, timeoutMs);
+
     return { ...result, measuredAt };
   } catch (error) {
-    const timedOut = error.message === "probe_timeout";
-    const unsafe = error.message === "unsafe_endpoint";
-
-    if (!timedOut && !unsafe) {
-      console.error("[HTTP PROBE DEBUG]", {
-        name: error.name || "Error",
-        code: error.code || null,
-        message: error.message || null
-      });
+    if (error.message === "probe_timeout") {
+      return {
+        outcome: "timeout",
+        failureCategory: "timeout",
+        latencyMs: null,
+        httpStatusCode: null,
+        measuredAt
+      };
     }
 
+    const unsafe = error.message === "unsafe_endpoint";
+
     return {
-      outcome: timedOut
-        ? "timeout"
-        : unsafe
-          ? "unsafe_endpoint"
-          : "connection_error",
-      failureCategory: timedOut
-        ? "timeout"
-        : unsafe
-          ? "unsafe_endpoint"
-          : "connection_error",
+      outcome: unsafe ? "unsafe_endpoint" : "connection_error",
+      failureCategory: unsafe ? "unsafe_endpoint" : "connection_error",
       latencyMs: null,
       httpStatusCode: null,
       measuredAt,
@@ -183,4 +188,3 @@ export async function probeHttpEndpoint({
     };
   }
 }
-
