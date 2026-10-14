@@ -1,3 +1,4 @@
+
 import { randomUUID } from "node:crypto";
 import { DEFAULT_SERVICES } from "../config/services.js";
 import { loadHealthEndpoints } from "../config/healthEndpoints.js";
@@ -44,12 +45,14 @@ export function createHttpProbeCollector({
     if (activeServices.has(service._id)) {
       return { persisted: 0, skipped: 1, failed: 0 };
     }
+
     activeServices.add(service._id);
     const endpoint = endpoints.get(service._id);
     const measuredAt = clock();
 
     try {
       let result;
+
       try {
         result = endpoint
           ? await probe({
@@ -65,11 +68,26 @@ export function createHttpProbeCollector({
               httpStatusCode: null,
               measuredAt
             };
+
+        if (result.outcome !== "success" && result.outcome !== "unconfigured") {
+          log.warn("metrics.http_probe_result", {
+            serviceId: service._id,
+            outcome: result.outcome,
+            failureCategory: result.failureCategory ?? null,
+            errorName: result.errorName ?? null,
+            errorCode: result.errorCode ?? null,
+            errorMessage: result.errorMessage ?? null,
+            httpStatusCode: result.httpStatusCode ?? null
+          });
+        }
       } catch (error) {
         log.error("metrics.http_probe_failed", {
           serviceId: service._id,
-          errorName: error.name || "Error"
+          errorName: error.name || "Error",
+          errorCode: error.code || error.cause?.code || null,
+          errorMessage: error.message || error.cause?.message || null
         });
+
         result = {
           outcome: "connection_error",
           failureCategory: "connection_error",
@@ -79,10 +97,12 @@ export function createHttpProbeCollector({
         };
       }
 
+      const sampleTime = result.measuredAt || measuredAt;
+
       const metric = await metricModel.create({
         _id: randomUUID(),
         serviceId: service._id,
-        measuredAt: result.measuredAt || measuredAt,
+        measuredAt: sampleTime,
         latencyMs:
           typeof result.latencyMs === "number" &&
           Number.isFinite(result.latencyMs) &&
@@ -93,15 +113,15 @@ export function createHttpProbeCollector({
           result.outcome === "success"
             ? "healthy"
             : result.outcome === "unconfigured"
-            ? "unconfigured"
-            : "degraded",
+              ? "unconfigured"
+              : "degraded",
         source: "http_probe",
         outcome: result.outcome,
         httpStatusCode: result.httpStatusCode ?? null,
         failureCategory: result.failureCategory ?? null,
         samplingIntervalMs: config.samplingIntervalMs,
         expiresAt: new Date(
-          (result.measuredAt || measuredAt).getTime() + config.retentionMs
+          sampleTime.getTime() + config.retentionMs
         )
       });
 
@@ -111,7 +131,9 @@ export function createHttpProbeCollector({
         log.error("metrics.probe_state_update_failed", {
           serviceId: service._id,
           metricId: metric._id,
-          errorName: error.name || "Error"
+          errorName: error.name || "Error",
+          errorCode: error.code || error.cause?.code || null,
+          errorMessage: error.message || error.cause?.message || null
         });
       }
 
@@ -134,12 +156,16 @@ export function createHttpProbeCollector({
           errorName: error.name || "Error"
         });
       }
+
       return { persisted: 1, skipped: 0, failed: 0 };
     } catch (error) {
       log.error("metrics.sample_persist_failed", {
         serviceId: service._id,
-        errorName: error.name || "Error"
+        errorName: error.name || "Error",
+        errorCode: error.code || error.cause?.code || null,
+        errorMessage: error.message || error.cause?.message || null
       });
+
       return { persisted: 0, skipped: 0, failed: 1 };
     } finally {
       activeServices.delete(service._id);
@@ -148,19 +174,30 @@ export function createHttpProbeCollector({
 
   async function collect() {
     let services;
+
     try {
       services = await serviceModel
-        .find({ _id: { $in: DEFAULT_SERVICES.map(({ id }) => id) } })
+        .find({
+          _id: {
+            $in: DEFAULT_SERVICES.map(({ id }) => id)
+          }
+        })
         .select("_id")
         .lean();
     } catch (error) {
       log.error("metrics.probe_service_query_failed", {
-        errorName: error.name || "Error"
+        errorName: error.name || "Error",
+        errorCode: error.code || error.cause?.code || null,
+        errorMessage: error.message || error.cause?.message || null
       });
+
       return { persisted: 0, skipped: 0, failed: 1 };
     }
 
-    const results = await Promise.all(services.map(probeService));
+    const results = await Promise.all(
+      services.map(probeService)
+    );
+
     return results.reduce(
       (summary, result) => ({
         persisted: summary.persisted + result.persisted,
@@ -173,8 +210,10 @@ export function createHttpProbeCollector({
 
   function collectOnce() {
     if (activeCycle) return activeCycle;
+
     const cycle = collect();
     activeCycle = cycle;
+
     cycle.then(
       () => {
         if (activeCycle === cycle) activeCycle = undefined;
@@ -183,12 +222,17 @@ export function createHttpProbeCollector({
         if (activeCycle === cycle) activeCycle = undefined;
       }
     );
+
     return cycle;
   }
 
   async function setConfigurationState() {
     await serviceModel.updateMany(
-      { _id: { $in: DEFAULT_SERVICES.map(({ id }) => id) } },
+      {
+        _id: {
+          $in: DEFAULT_SERVICES.map(({ id }) => id)
+        }
+      },
       [
         {
           $set: {
@@ -210,24 +254,32 @@ export function createHttpProbeCollector({
   }
 
   async function start() {
-    if (stopped) throw new Error("A stopped HTTP probe collector cannot restart.");
+    if (stopped) {
+      throw new Error("A stopped HTTP probe collector cannot restart.");
+    }
+
     if (timer) return false;
+
     await setConfigurationState();
     void collectOnce();
+
     timer = setInterval(() => {
       if (activeCycle) return;
       void collectOnce();
     }, config.samplingIntervalMs);
+
     timer.unref?.();
     return true;
   }
 
   async function stop() {
     stopped = true;
+
     if (timer) {
       clearInterval(timer);
       timer = undefined;
     }
+
     if (activeCycle) await activeCycle;
   }
 
@@ -239,8 +291,11 @@ export async function startHttpProbeCollection(config, endpoints) {
     logger.info("metrics.collection_disabled");
     return undefined;
   }
+
   if (singletonCollector) return singletonCollector;
+
   const configuredEndpoints = endpoints || loadHealthEndpoints();
+
   singletonCollector = createHttpProbeCollector({
     config,
     endpoints: configuredEndpoints,
@@ -248,18 +303,24 @@ export async function startHttpProbeCollection(config, endpoints) {
       process.env.HEALTH_ALLOW_LOCAL_HTTP?.toLowerCase() === "true" &&
       process.env.NODE_ENV === "development"
   });
+
   await singletonCollector.start();
+
   logger.info("metrics.http_probe_collection_started", {
     samplingIntervalMs: config.samplingIntervalMs,
     configuredServiceCount: configuredEndpoints.size
   });
+
   return singletonCollector;
 }
 
 export async function stopHttpProbeCollection() {
   if (!singletonCollector) return;
+
   const collector = singletonCollector;
   singletonCollector = undefined;
+
   await collector.stop();
+
   logger.info("metrics.http_probe_collection_stopped");
 }

@@ -178,8 +178,8 @@ export async function probeHttpEndpoint({
       httpStatusCode: null,
       measuredAt,
       errorName: error.name || "Error",
-      errorCode: error.code || null,
-      errorMessage: error.message || null
+      errorCode: error.code || error.cause?.code || null,
+      errorMessage: error.message || error.cause?.message || null
     };
   }
 }
