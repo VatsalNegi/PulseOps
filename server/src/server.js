@@ -22,7 +22,6 @@ import {
 import { logger } from "./utils/logger.js";
 
 dotenv.config();
-
 let mongoLifecycleLoggingRegistered = false;
 
 function registerMongoLifecycleLogging() {
